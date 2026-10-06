@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AERO Congestion Control for QUIC</title>
+<meta name="description" content="AERO is the first pluggable, learning-based congestion control algorithm for QUIC. It adapts the congestion window from four transport signals and drops into any QUIC stack.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* ---------- tokens: light is the bare :root ---------- */
+:root{
+  color-scheme: light;
+  --ground:#F1F5F4;  --panel:#FFFFFF;   --panel-2:#F7FAF9;
+  --line:#D5DEDC;    --line-soft:#E6EDEB;
+  --ink:#0C1A1D;     --ink-2:#36484B;   --ink-3:#657779;
+  --signal:#00786E;  --signal-2:#00A294; --signal-wash:#E2F2EF;
+  --amber:#A96716;   --clay:#A53F2B;    --moss:#4C6B3C;  --slate:#5B6E78;
+  --shadow:0 1px 2px rgba(12,26,29,.06), 0 8px 24px -12px rgba(12,26,29,.18);
+  --radius:3px;
+  --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --display:"Archivo", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --ground:#081114;  --panel:#0E1B1F;  --panel-2:#121F23;
+    --line:#1F3237;    --line-soft:#182A2E;
+    --ink:#E7F0EE;     --ink-2:#A8BBBC;  --ink-3:#7A8F91;
+    --signal:#35D6C3;  --signal-2:#5BE8D6; --signal-wash:#0E2B29;
+    --amber:#E9A55C;   --clay:#E8795F;   --moss:#9DC27C;  --slate:#8CA3AE;
+  }
+}
+</style>
+<style>
+/* dark shadow, for the system-default (un-stamped) case */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --ground:#081114;  --panel:#0E1B1F;  --panel-2:#121F23;
+  --line:#1F3237;    --line-soft:#182A2E;
+  --ink:#E7F0EE;     --ink-2:#A8BBBC;  --ink-3:#7A8F91;
+  --signal:#35D6C3;  --signal-2:#5BE8D6; --signal-wash:#0E2B29;
+  --amber:#E9A55C;   --clay:#E8795F;   --moss:#9DC27C;  --slate:#8CA3AE;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+}
+
+/* ---------- reset ---------- */
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%; -webkit-text-size-adjust:100%}
+body{
+  margin:0; min-height:100%;
+  background:var(--ground); color:var(--ink);
+  font-family:var(--sans); font-size:16px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+img{max-width:100%; height:auto; display:block}
+a{color:var(--signal); text-decoration-thickness:1px; text-underline-offset:3px}
+a:hover{color:var(--signal-2)}
+:focus-visible{outline:2px solid var(--signal-2); outline-offset:2px; border-radius:2px}
+h1,h2,h3{text-wrap:balance; margin:0; font-family:var(--display); font-weight:800; letter-spacing:-.022em; line-height:1.1}
+p{margin:0}
+.num{font-variant-numeric:tabular-nums}
+
+/* ---------- layout ---------- */
+.wrap{width:100%; max-width:1120px; margin-inline:auto; padding-inline:22px}
+.sec{padding-block:72px; border-top:1px solid var(--line-soft)}
+.sec:first-of-type{border-top:0}
+.eyebrow{
+  font-family:var(--mono); font-size:11.5px; font-weight:500;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--signal);
+  display:flex; align-items:center; gap:10px; margin-bottom:18px;
+}
+.eyebrow::after{content:""; flex:1; height:1px; background:var(--line); max-width:220px}
+.lede{color:var(--ink-2); font-size:17.5px; max-width:68ch; margin-top:16px}
+.sec h2{font-size:clamp(28px,4.2vw,40px)}
+.sec h3{font-size:18px; letter-spacing:-.01em; font-weight:700}
+
+/* ---------- header ---------- */
+header.bar{
+  position:sticky; top:env(safe-area-inset-top,0px); z-index:50;
+  background:color-mix(in srgb, var(--ground) 88%, transparent);
+  backdrop-filter:saturate(1.6) blur(10px);
+  border-bottom:1px solid var(--line-soft);
+}
+.bar-in{display:flex; align-items:center; gap:18px; height:58px}
+.mark{display:flex; align-items:baseline; gap:9px; font-family:var(--display); font-weight:800; font-size:19px; letter-spacing:-.03em; color:var(--ink); text-decoration:none}
+.mark .dot{width:7px; height:7px; border-radius:50%; background:var(--signal); display:inline-block; transform:translateY(-1px)}
+.mark small{font-family:var(--mono); font-weight:400; font-size:11px; letter-spacing:.1em; color:var(--ink-3); text-transform:uppercase}
+nav.links{margin-left:auto; display:flex; gap:22px; align-items:center}
+nav.links a{font-size:13.5px; color:var(--ink-2); text-decoration:none; font-weight:500}
+nav.links a:hover{color:var(--signal)}
+.icon-btn{
+  appearance:none; border:1px solid var(--line); background:var(--panel); color:var(--ink-2);
+  width:34px; height:34px; border-radius:var(--radius); cursor:pointer; display:grid; place-items:center;
+}
+.icon-btn:hover{border-color:var(--signal); color:var(--signal)}
+@media (max-width:760px){ nav.links a{display:none} }
+
+/* ---------- hero ---------- */
+.hero{padding-block:62px 64px}
+.hero h1{font-size:clamp(46px,9vw,92px); letter-spacing:-.045em; line-height:.95}
+.hero h1 .thin{font-weight:500; color:var(--ink-2); display:block; font-size:clamp(20px,3.2vw,31px); letter-spacing:-.02em; line-height:1.18; margin-top:18px; max-width:22ch}
+.venues{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:26px}
+.venue{
+  font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+  border:1px solid var(--line); color:var(--ink-2); padding:5px 10px; border-radius:var(--radius); background:var(--panel);
+}
+.venue b{color:var(--signal); font-weight:600}
+.cta{display:flex; flex-wrap:wrap; gap:10px; margin-top:34px}
+.btn{
+  font-family:var(--sans); font-size:14px; font-weight:600; padding:11px 18px; border-radius:var(--radius);
+  text-decoration:none; border:1px solid var(--line); color:var(--ink); background:var(--panel); display:inline-flex; gap:9px; align-items:center;
+}
+.btn:hover{border-color:var(--signal); color:var(--signal)}
+.btn.primary{background:var(--signal); border-color:var(--signal); color:#fff}
+.btn.primary:hover{background:var(--signal-2); border-color:var(--signal-2); color:#04201d}
+
+/* ---------- stat strip ---------- */
+.stats{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line-soft); border:1px solid var(--line-soft); margin-top:50px}
+.stat{background:var(--panel); padding:20px 18px}
+.stat .v{font-family:var(--display); font-weight:800; font-size:clamp(26px,3.4vw,34px); letter-spacing:-.03em; color:var(--signal); line-height:1}
+.stat .k{font-size:12.5px; color:var(--ink-2); margin-top:9px; line-height:1.45}
+.stat .src{font-family:var(--mono); font-size:10px; color:var(--ink-3); letter-spacing:.06em; margin-top:7px; text-transform:uppercase}
+@media (max-width:860px){ .stats{grid-template-columns:repeat(2,1fr)} }
+
+/* ---------- panels & charts ---------- */
+.panel{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow)}
+.panel-pad{padding:24px}
+.panel-head{display:flex; flex-wrap:wrap; gap:12px 16px; align-items:baseline; justify-content:space-between; padding:18px 24px; border-bottom:1px solid var(--line-soft)}
+.panel-head h3{font-family:var(--display); font-size:16px; font-weight:700}
+.panel-head .meta{font-family:var(--mono); font-size:11px; color:var(--ink-3); letter-spacing:.05em}
+
+.barrow{display:grid; grid-template-columns:minmax(96px,160px) 1fr auto; gap:14px; align-items:center; padding:9px 0}
+.barrow + .barrow{border-top:1px solid var(--line-soft)}
+.barrow .nm{font-family:var(--mono); font-size:12.5px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.track{height:19px; background:var(--panel-2); border:1px solid var(--line-soft); position:relative; overflow:hidden}
+.fill{height:100%; width:var(--w); transform-origin:left center; animation:grow .85s cubic-bezier(.22,.8,.3,1)}
+.barrow .vl{font-family:var(--mono); font-size:12.5px; font-weight:500; min-width:62px; text-align:right}
+@keyframes grow{from{transform:scaleX(0)} to{transform:scaleX(1)}}
+.c-aero{background:var(--signal)}   .t-aero{color:var(--signal)}
+.c-bbr{background:var(--amber)}     .t-bbr{color:var(--amber)}
+.c-cubic{background:var(--clay)}    .t-cubic{color:var(--clay)}
+.c-reno{background:var(--moss)}     .t-reno{color:var(--moss)}
+.c-cap{background:var(--slate)}     .t-cap{color:var(--slate)}
+
+.legend{display:flex; flex-wrap:wrap; gap:16px; margin-top:18px; font-family:var(--mono); font-size:11.5px; color:var(--ink-2)}
+.legend span{display:inline-flex; align-items:center; gap:7px}
+.swatch{width:11px; height:11px; border-radius:2px; display:inline-block}
+
+/* tabs */
+.tabs{display:flex; flex-wrap:wrap; gap:6px}
+.tab{
+  appearance:none; cursor:pointer; font-family:var(--mono); font-size:11.5px; letter-spacing:.06em; text-transform:uppercase;
+  padding:7px 12px; border:1px solid var(--line); background:var(--panel); color:var(--ink-2); border-radius:var(--radius);
+}
+.tab:hover{border-color:var(--signal); color:var(--signal)}
+.tab[aria-selected="true"]{background:var(--signal); border-color:var(--signal); color:#fff}
+:root[data-theme="dark"] .tab[aria-selected="true"], :root:not([data-theme="light"]) .tab[aria-selected="true"]{color:#04201d}
+
+/* ---------- pipeline ---------- */
+.pipe{display:grid; grid-template-columns:200px 1fr 230px; gap:0; align-items:stretch}
+@media (max-width:900px){ .pipe{grid-template-columns:1fr} }
+.pipe-col{padding:22px}
+.pipe-col + .pipe-col{border-left:1px solid var(--line-soft)}
+@media (max-width:900px){ .pipe-col + .pipe-col{border-left:0; border-top:1px solid var(--line-soft)} }
+.sig{display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12.5px; padding:8px 0; color:var(--ink-2)}
+.sig b{color:var(--ink); font-weight:600}
+.sig .gl{width:8px; height:8px; border-radius:50%; background:var(--signal); box-shadow:0 0 0 3px var(--signal-wash); flex:none}
+.layers{display:flex; flex-direction:column; gap:7px}
+.layer{
+  font-family:var(--mono); font-size:11.5px; color:var(--ink-2); padding:9px 12px;
+  border:1px dashed var(--line); background:var(--panel-2); display:flex; justify-content:space-between; gap:10px;
+}
+.layer b{color:var(--ink); font-weight:600}
+.flowline{position:relative; height:2px; background:var(--line); margin:16px 0; overflow:hidden}
+.flowline i{position:absolute; top:-3px; width:8px; height:8px; border-radius:50%; background:var(--signal); animation:flow 2.6s linear infinite}
+@keyframes flow{from{left:-8px} to{left:100%}}
+
+/* alpha explorer */
+.alpha-out{font-family:var(--display); font-weight:800; font-size:clamp(30px,5vw,44px); letter-spacing:-.03em; color:var(--signal); line-height:1}
+.formula{font-family:var(--mono); font-size:13px; color:var(--ink-2); margin-top:8px}
+input[type=range]{width:100%; accent-color:var(--signal); margin-top:14px}
+.rng-lab{display:flex; justify-content:space-between; font-family:var(--mono); font-size:11px; color:var(--ink-3); margin-top:4px}
+
+/* ---------- tables ---------- */
+.tbl-scroll{overflow-x:auto}
+table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:440px}
+th,td{text-align:left; padding:10px 14px; border-bottom:1px solid var(--line-soft)}
+th{font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); font-weight:500}
+td.n{font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums}
+tbody tr:last-child td{border-bottom:0}
+
+/* ---------- code ---------- */
+pre{
+  margin:0; overflow-x:auto; background:var(--panel-2); border:1px solid var(--line-soft);
+  border-radius:var(--radius); padding:16px 18px; font-family:var(--mono); font-size:12.5px; line-height:1.75; color:var(--ink-2);
+}
+pre .c{color:var(--ink-3)}
+pre .k{color:var(--signal)}
+code{font-family:var(--mono); font-size:.92em; background:var(--signal-wash); color:var(--signal); padding:1px 5px; border-radius:2px}
+
+.grid-2{display:grid; grid-template-columns:repeat(2,1fr); gap:20px}
+.grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:20px}
+.grid-4{display:grid; grid-template-columns:repeat(4,1fr); gap:16px}
+@media (max-width:900px){ .grid-2,.grid-3,.grid-4{grid-template-columns:1fr} }
+
+.stack{border:1px solid var(--line); background:var(--panel); padding:18px; border-radius:var(--radius)}
+.stack .lang{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--signal)}
+.stack h4{margin:7px 0 6px; font-family:var(--display); font-size:17px; font-weight:700; letter-spacing:-.02em}
+.stack p{font-size:12.5px; color:var(--ink-2); line-height:1.55}
+.stack code{font-size:11px; background:transparent; color:var(--ink-3); padding:0}
+
+.cite{position:relative}
+.copy{
+  position:absolute; top:10px; right:10px; appearance:none; cursor:pointer; font-family:var(--mono); font-size:10.5px;
+  letter-spacing:.08em; text-transform:uppercase; padding:5px 9px; border:1px solid var(--line); background:var(--panel); color:var(--ink-2); border-radius:2px;
+}
+.copy:hover{border-color:var(--signal); color:var(--signal)}
+
+figure{margin:0}
+figcaption{font-size:12.5px; color:var(--ink-3); margin-top:10px; font-family:var(--mono); line-height:1.6}
+.figshell{background:#fff; padding:16px; border:1px solid var(--line); border-radius:var(--radius)}
+
+footer{border-top:1px solid var(--line-soft); padding-block:40px 56px; color:var(--ink-3); font-size:13px}
+footer a{color:var(--ink-2)}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important}
+  .fill{transform:none !important}
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap bar-in">
+    <a class="mark" href="#top"><span class="dot"></span>AERO <small>for QUIC</small></a>
+    <nav class="links">
+      <a href="#problem">Problem</a>
+      <a href="#design">Design</a>
+      <a href="#results">Results</a>
+      <a href="#pluggable">Pluggability</a>
+      <a href="#start">Get started</a>
+      <a href="#cite">Cite</a>
+    </nav>
+    <button class="icon-btn" id="theme" type="button" aria-label="Switch colour theme" title="Switch colour theme">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="none"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ============ HERO ============ -->
+<section class="wrap hero">
+  <div class="venues">
+    <span class="venue"><b>NOSSDAV</b> &nbsp;2025</span>
+    <span class="venue"><b>ACM TOMM</b> &nbsp;2026</span>
+    <span class="venue">Concordia University</span>
+  </div>
+  <h1>AERO
+    <span class="thin">The first pluggable, learning-based congestion control for QUIC.</span>
+  </h1>
+  <p class="lede">
+    Every major QUIC stack still runs congestion control inherited from TCP &mdash; Cubic, NewReno, BBR2 &mdash;
+    and those heuristics leave most of the link unused. AERO replaces just the window update rule with a
+    PPO-trained policy that reads four transport signals and returns one scalar. No kernel patches, no retraining
+    per stack, no changes to loss detection or pacing.
+  </p>
+
+  <div class="cta">
+    <a class="btn primary" href="#start">Get started</a>
+    <a class="btn" href="papers/AERO_TOMM.pdf">TOMM paper (PDF)</a>
+    <a class="btn" href="papers/AERO_NOSSDAV.pdf">NOSSDAV paper (PDF)</a>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="v num">3.7&times;</div>
+      <div class="k">Median delivery rate over BBR2 on the LTE Belgium trace</div>
+      <div class="src">TOMM &sect;1.1</div>
+    </div>
+    <div class="stat">
+      <div class="v num">+13%</div>
+      <div class="k">VMAF in video&#8209;on&#8209;demand, with 30% less rebuffering</div>
+      <div class="src">TOMM abstract</div>
+    </div>
+    <div class="stat">
+      <div class="v num">65%</div>
+      <div class="k">Fewer stalls in low&#8209;latency live, at +12% VMAF</div>
+      <div class="src">NOSSDAV abstract</div>
+    </div>
+    <div class="stat">
+      <div class="v num">0.995</div>
+      <div class="k">Jain's fairness index across five concurrent flows</div>
+      <div class="src">TOMM Fig. 6</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PROBLEM ============ -->
+<section class="wrap sec" id="problem">
+  <div class="eyebrow">The problem</div>
+  <h2>Heuristic congestion control leaves the link idle</h2>
+  <p class="lede">
+    Run Quiche against the LTE Belgium trace &mdash; 3.3&nbsp;Mbps average, 1&nbsp;s sampling, Pensieve driving bitrate
+    selection &mdash; and the classic algorithms never climb. Their congestion windows sit far below what the link
+    will carry, so the delivery-rate distribution piles up at the bottom. AERO tracks capacity instead of guessing at it.
+  </p>
+
+  <div class="panel" style="margin-top:34px">
+    <div class="panel-head">
+      <h3>Median delivery rate</h3>
+      <span class="meta">LTE Belgium &middot; 3.3 Mbps avg &middot; Pensieve ABR &middot; 3 runs &times; 120 s</span>
+    </div>
+    <div class="panel-pad" id="heroChart"></div>
+  </div>
+
+  <div class="grid-2" style="margin-top:28px; align-items:start">
+    <figure>
+      <div class="figshell">
+        <img src="assets/delivery-rate-vs-delay.png" alt="Three scatter panels of normalized mean delivery rate against normalized mean delay for AERO, BBR2, Cubic and Reno across the 5G Amazon, 5G Netflix and LTE Belgium traces. AERO sits highest on delivery rate in every panel.">
+      </div>
+      <figcaption>
+        Normalized delivery rate vs. delay in low-latency live, for 5G Amazon (left), 5G Netflix (centre) and
+        LTE Belgium (right). Up and to the right is better. Figure 4, NOSSDAV&nbsp;2025.
+      </figcaption>
+    </figure>
+    <div>
+      <h3>What the heuristics get wrong</h3>
+      <p class="lede" style="font-size:15.5px; margin-top:12px">
+        Cubic and NewReno are purely loss-driven: they push until something drops, collapse, and oscillate.
+        BBR2 adapts for the first 10&ndash;15&nbsp;seconds and then stops following the capacity as it rises.
+        In low-latency live the buffer is small, so each of those misses costs playback directly.
+      </p>
+      <p class="lede" style="font-size:15.5px; margin-top:14px">
+        Across all three traces AERO delivered <b>~161% higher average delivery rate than BBR2</b> for about
+        <b>18% more delay</b> &mdash; a trade the QoE models reward, because in live streaming both terms matter.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DESIGN ============ -->
+<section class="wrap sec" id="design">
+  <div class="eyebrow">How it works</div>
+  <h2>Four signals in, one multiplier out</h2>
+  <p class="lede">
+    AERO models the window update as a Markov decision process and solves it with an advantage actor&ndash;critic
+    network trained by PPO with generalized advantage estimation. The actor emits a single scalar
+    &alpha;, bounded by its own tanh, which becomes a multiplicative window update.
+  </p>
+
+  <div class="panel" style="margin-top:34px">
+    <div class="panel-head">
+      <h3>Inference path, per congestion event</h3>
+      <span class="meta">state &rarr; actor &rarr; &alpha; &rarr; cwnd</span>
+    </div>
+    <div class="pipe">
+      <div class="pipe-col">
+        <div class="eyebrow" style="margin-bottom:10px">Input state</div>
+        <div class="sig"><span class="gl"></span><b>th</b><sub>t</sub>&nbsp;throughput</div>
+        <div class="sig"><span class="gl"></span><b>d</b><sub>t</sub>&nbsp;delay</div>
+        <div class="sig"><span class="gl"></span><b>j</b><sub>t</sub>&nbsp;jitter</div>
+        <div class="sig"><span class="gl"></span><b>l</b><sub>t</sub>&nbsp;loss ratio</div>
+        <p style="font-size:12px; color:var(--ink-3); margin-top:12px; line-height:1.55">
+          Min&ndash;max normalized, so no single term dominates the policy.
+        </p>
+      </div>
+      <div class="pipe-col">
+        <div class="eyebrow" style="margin-bottom:10px">Actor network</div>
+        <div class="layers">
+          <div class="layer"><span>FC 1 &middot; LeakyReLU</span><b>256</b></div>
+          <div class="layer"><span>BatchNorm</span><b>256</b></div>
+          <div class="layer"><span>FC 2 &middot; LeakyReLU</span><b>256</b></div>
+          <div class="layer"><span>BatchNorm</span><b>256</b></div>
+          <div class="layer"><span>FC 3 &middot; tanh</span><b>1</b></div>
+        </div>
+        <div class="flowline" aria-hidden="true"><i></i><i style="animation-delay:.9s"></i><i style="animation-delay:1.8s"></i></div>
+        <p style="font-size:12px; color:var(--ink-3); line-height:1.55">
+          A critic of the same depth scores the state&ndash;action pair during training only. At inference
+          the critic is not loaded.
+        </p>
+      </div>
+      <div class="pipe-col">
+        <div class="eyebrow" style="margin-bottom:10px">Window update</div>
+        <div class="alpha-out num" id="multOut">1.00&times;</div>
+        <div class="formula">cwnd<sub>t+1</sub> = A<sup>&alpha;</sup> &times; cwnd<sub>t</sub></div>
+        <label for="alphaRange" style="display:block; font-family:var(--mono); font-size:11.5px; color:var(--ink-3); margin-top:18px">
+          &alpha; = <span id="alphaVal" class="num">0.00</span>
+        </label>
+        <input type="range" id="alphaRange" min="-1" max="1" step="0.01" value="0">
+        <div class="rng-lab"><span>&minus;1 &middot; back off</span><span>+1 &middot; open up</span></div>
+        <p style="font-size:12px; color:var(--ink-3); margin-top:14px; line-height:1.55">
+          With the learned base <b class="num">A = 1.87</b>, a 1,000-packet window becomes
+          <b class="num" id="cwndOut">1,000</b>.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top:28px; align-items:start">
+    <div class="panel">
+      <div class="panel-head"><h3>Training setup</h3><span class="meta">PyTorch 2.1.1+cu121 &middot; Python 3.10.12</span></div>
+      <div class="tbl-scroll">
+        <table>
+          <tbody>
+            <tr><td>Discount factor &gamma;</td><td class="n">0.95</td></tr>
+            <tr><td>GAE parameter &lambda;</td><td class="n">0.90</td></tr>
+            <tr><td>Learning rate &mdash; actor / critic</td><td class="n">3&times;10<sup>&minus;4</sup> / 3&times;10<sup>&minus;3</sup></td></tr>
+            <tr><td>PPO clip &epsilon;</td><td class="n">0.2</td></tr>
+            <tr><td>Entropy coefficient</td><td class="n">2.6</td></tr>
+            <tr><td>Batch size</td><td class="n">128</td></tr>
+            <tr><td>Epochs</td><td class="n">38,000</td></tr>
+            <tr><td>Base factor A</td><td class="n">[1.2, 3] &rarr; 1.87</td></tr>
+            <tr><td>Action &alpha;</td><td class="n">[&minus;1, 1]</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Reward weights by traffic mix</h3><span class="meta">r<sub>t</sub> = th &minus; w&#8321;d &minus; w&#8322;l &minus; w&#8323;j</span></div>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>Dominant packets</th><th>w&#8321; delay</th><th>w&#8322; loss</th><th>w&#8323; jitter</th></tr></thead>
+          <tbody>
+            <tr><td>Video</td><td class="n">4</td><td class="n">5</td><td class="n">2</td></tr>
+            <tr><td>Audio</td><td class="n">3</td><td class="n">4</td><td class="n">2</td></tr>
+            <tr><td>Probing</td><td class="n">3</td><td class="n">2</td><td class="n">2</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel-pad" style="border-top:1px solid var(--line-soft)">
+        <p style="font-size:13px; color:var(--ink-2); line-height:1.6; margin:0">
+          Loss is weighted hardest when video packets dominate and most lightly for probing traffic.
+          A second shaping term rewards predicted windows that approach the bottleneck capacity without
+          crossing it, which turns the dataset's discrete call traces into a semi-continuous action space.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <p class="lede" style="margin-top:26px">
+    Trained on the <a href="https://github.com/microsoft/RL4BandwidthEstimationChallenge">Microsoft RL4BandwidthEstimation</a>
+    emulated dataset &mdash; 9,405 peer-to-peer Teams audio/video calls &mdash; with linear noise added to delay
+    (&minus;2 to 100&nbsp;ms) and loss (0&ndash;5%) to widen the observation space.
+  </p>
+</section>
+
+<!-- ============ RESULTS ============ -->
+<section class="wrap sec" id="results">
+  <div class="eyebrow">Results</div>
+  <h2>Measured across three traces and six ABR schemes</h2>
+  <p class="lede">
+    Low-latency live streaming of 3DMark Night Raid, 10 bitrate ladders from 288p@0.5&nbsp;Mbps to 2160p@40&nbsp;Mbps,
+    4&nbsp;s segments, 12&nbsp;s maximum buffer. Every figure below is an average of three 120&nbsp;s runs.
+    Pick a metric and a trace.
+  </p>
+
+  <div class="panel" style="margin-top:30px">
+    <div class="panel-head" style="gap:14px">
+      <div class="tabs" role="tablist" aria-label="Metric" id="metricTabs">
+        <button class="tab" role="tab" data-metric="vmaf" aria-selected="true">VMAF</button>
+        <button class="tab" role="tab" data-metric="bitrate" aria-selected="false">Avg bitrate</button>
+        <button class="tab" role="tab" data-metric="seg4k" aria-selected="false">4K segments</button>
+        <button class="tab" role="tab" data-metric="rd" aria-selected="false">Rebuffer ratio</button>
+        <button class="tab" role="tab" data-metric="psnr" aria-selected="false">PSNR</button>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Network trace" id="traceTabs">
+        <button class="tab" role="tab" data-trace="amazon" aria-selected="true">5G Amazon</button>
+        <button class="tab" role="tab" data-trace="netflix" aria-selected="false">5G Netflix</button>
+        <button class="tab" role="tab" data-trace="belgium" aria-selected="false">LTE Belgium</button>
+      </div>
+    </div>
+    <div class="panel-pad">
+      <div id="resultChart"></div>
+      <div class="legend">
+        <span><i class="swatch c-aero"></i>AERO</span>
+        <span><i class="swatch c-bbr"></i>BBR2</span>
+        <span><i class="swatch c-cubic"></i>Cubic</span>
+        <span><i class="swatch c-reno"></i>Reno</span>
+        <span id="metricNote" style="color:var(--ink-3)"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-3" style="margin-top:26px">
+    <div class="panel panel-pad">
+      <h3>4K reaches the player</h3>
+      <p style="font-size:13.5px; color:var(--ink-2); margin-top:10px; line-height:1.6">
+        On LTE Belgium, AERO + Merina<sup>+</sup> pulled <b class="num">21.0</b> segments at 2160p in 120&nbsp;s.
+        BBR2 with the same ABR managed <b class="num">7.0</b>. Below 4K-capable throughput, the ABR simply
+        never offers the top rungs of the ladder.
+      </p>
+    </div>
+    <div class="panel panel-pad">
+      <h3>Stalls, not just bitrate</h3>
+      <p style="font-size:13.5px; color:var(--ink-2); margin-top:10px; line-height:1.6">
+        BBR2 + Merina<sup>+</sup> hit a <b class="num">13.42%</b> rebuffer ratio on 5G Amazon. AERO + Pensieve<sup>+</sup>
+        stayed at <b class="num">0.01%</b> while selecting a 5&times; higher average bitrate &mdash; higher quality
+        and fewer interruptions at once.
+      </p>
+    </div>
+    <div class="panel panel-pad">
+      <h3>ABR-agnostic by design</h3>
+      <p style="font-size:13.5px; color:var(--ink-2); margin-top:10px; line-height:1.6">
+        AERO was paired with buffer-based (BBA2-C), throughput-based (AVG-TH) and learned
+        (Pensieve<sup>+</sup>, Merina<sup>+</sup>) schemes. It never needed to know which one was running
+        on the client.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PLUGGABILITY ============ -->
+<section class="wrap sec" id="pluggable">
+  <div class="eyebrow">Pluggability</div>
+  <h2>One trained model, four QUIC stacks</h2>
+  <p class="lede">
+    AERO asks for four signals that every QUIC congestion controller already computes, and writes back one
+    variable that every one of them already maintains. That is the whole interface. The same checkpoint
+    deploys without retraining or architectural change.
+  </p>
+
+  <div class="grid-4" style="margin-top:30px">
+    <div class="stack">
+      <div class="lang">Rust</div><h4>Quiche</h4>
+      <p>Reference implementation and the stack all headline results were measured on.</p>
+      <p style="margin-top:8px"><code>CongestionControl</code></p>
+    </div>
+    <div class="stack">
+      <div class="lang">Rust</div><h4>Quinn</h4>
+      <p>Used for the five-client fairness study on the 5G Amazon trace.</p>
+      <p style="margin-top:8px"><code>CongestionController</code></p>
+    </div>
+    <div class="stack">
+      <div class="lang">Python</div><h4>Aioquic</h4>
+      <p>Shipped in this repository as <code style="color:var(--signal)">aero_aioquic.py</code>, ready to drop in.</p>
+      <p style="margin-top:8px"><code>QuicCongestionControl</code></p>
+    </div>
+    <div class="stack">
+      <div class="lang">Rust</div><h4>Tquic</h4>
+      <p>Fourth integration, confirming the interface holds beyond the original stack.</p>
+      <p style="margin-top:8px"><code>CongestionController</code></p>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top:26px; align-items:start">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Five concurrent AERO flows</h3>
+        <span class="meta">Quinn &middot; 5G Amazon &middot; overall avg 21.8 Mbps</span>
+      </div>
+      <div class="panel-pad" id="fairChart"></div>
+    </div>
+    <div>
+      <h3>Three steps to integrate</h3>
+      <ol style="margin:14px 0 0; padding-left:20px; color:var(--ink-2); font-size:14.5px; line-height:1.7">
+        <li>Read <code>bytes_in_flight</code>, <code>latest_rtt</code>, <code>lost_packets</code> and
+            <code>rtt_variance</code> from the controller's per-connection state.</li>
+        <li>Call the trained model &mdash; in-process, through a shared library, or over a socket,
+            whichever suits the host language.</li>
+        <li>Write the returned window back to the connection's congestion state.</li>
+      </ol>
+      <p class="lede" style="font-size:15px; margin-top:16px">
+        Nothing in the handshake, packet parsing, loss detection or stream management changes. AERO runs
+        entirely in user space, which is where QUIC puts congestion control anyway &mdash; so there is no
+        kernel module and no elevated privilege, the exact barrier that keeps TCP's learned algorithms out of QUIC.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ GET STARTED ============ -->
+<section class="wrap sec" id="start">
+  <div class="eyebrow">Get started</div>
+  <h2>Train it, test it, or just deploy the model</h2>
+  <p class="lede">
+    The trained actor from both papers ships in <code>model/abr_ppo_38000.model</code>. If you only want to
+    run AERO, skip to step&nbsp;4. Full instructions, including every hardcoded path you need to change,
+    are in the repository README.
+  </p>
+
+  <div class="grid-2" style="margin-top:30px; align-items:start">
+    <div>
+      <h3 style="margin-bottom:12px">1 &middot; Install</h3>
+      <pre><span class="c"># Python 3.10, PyTorch 2.1.1</span>
+pip install -r requirements.txt</pre>
+
+      <h3 style="margin:24px 0 12px">2 &middot; Get the dataset</h3>
+      <pre><span class="c"># Microsoft RL4BandwidthEstimationChallenge</span>
+./download-emulated-dataset.sh
+<span class="c"># then point get_data.py:6 at the download</span></pre>
+
+      <h3 style="margin:24px 0 12px">3 &middot; Build the trace, then train</h3>
+      <pre>python3 get_data.py      <span class="c"># -&gt; drl_cc.txt</span>
+python3 train_aero.py    <span class="c"># checkpoints every 500 epochs</span></pre>
+    </div>
+    <div>
+      <h3 style="margin-bottom:12px">4 &middot; Evaluate the shipped model</h3>
+      <pre>python3 test_aero.py <span class="k">\</span>
+  --model model/abr_ppo_38000.model <span class="k">\</span>
+  --data  drl_cc.txt</pre>
+
+      <h3 style="margin:24px 0 12px">5 &middot; Call it from your own stack</h3>
+      <pre><span class="k">import</span> torch
+<span class="k">from</span> ppo6 <span class="k">import</span> Actor
+
+model = Actor(4, 1)
+model.load_state_dict(torch.load(
+    <span class="c">'model/abr_ppo_38000.model'</span>,
+    map_location=<span class="c">'cpu'</span>))
+model.eval()
+
+<span class="k">with</span> torch.no_grad():
+    alpha = model(state.unsqueeze(0)).squeeze()
+cwnd = (1.87 ** <span class="k">float</span>(alpha)) * cwnd</pre>
+      <p style="font-size:12.5px; color:var(--ink-3); margin-top:12px; line-height:1.6">
+        Keep the model in <code>eval()</code>: its two BatchNorm layers must use running statistics,
+        because inference runs one sample at a time.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CITE ============ -->
+<section class="wrap sec" id="cite">
+  <div class="eyebrow">Citation</div>
+  <h2>If you use our work, please cite</h2>
+
+  <div class="panel cite" style="margin-top:26px">
+    <button class="copy" type="button" data-copy="bib1">Copy</button>
+    <pre id="bib1">@inproceedings{sidhu2025aero,
+  title={Aero: A pluggable congestion control for QUIC},
+  author={Sidhu, Jashanjot Singh and Bentaleb, Abdelhak},
+  booktitle={Proceedings of the 35th Workshop on Network and Operating System Support for Digital Audio and Video},
+  pages={29--35},
+  year={2025}
+}</pre>
+  </div>
+
+  <div class="panel cite" style="margin-top:16px">
+    <button class="copy" type="button" data-copy="bib2">Copy</button>
+    <pre id="bib2">@article{sidhu2026towards,
+  title={Towards a Pluggable and Implementation-Agnostic Learning-Based Congestion Control for QUIC},
+  author={Sidhu, Jashanjot Singh and Bentaleb, Abdelhak},
+  journal={ACM Transactions on Multimedia Computing, Communications and Applications},
+  year={2026},
+  publisher={ACM New York, NY}
+}</pre>
+  </div>
+</section>
+
+</main>
+
+<footer class="wrap">
+  <p>
+    AERO &mdash; Jashanjot Singh Sidhu and Abdelhak Bentaleb, Concordia University, Montreal.
+    <a href="papers/AERO_NOSSDAV.pdf">NOSSDAV&nbsp;2025</a> &middot;
+    <a href="papers/AERO_TOMM.pdf">ACM&nbsp;TOMM&nbsp;2026</a>
+  </p>
+  <p style="margin-top:8px; font-size:12px">
+    All figures on this page are measured values reported in the two papers. Charts are drawn from the
+    published tables; Figure 4 is reproduced from the NOSSDAV paper.
+  </p>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- theme ---------- */
+  var root = document.documentElement, tbtn = document.getElementById("theme");
+  try { var saved = localStorage.getItem("aero-theme"); if (saved) root.setAttribute("data-theme", saved); } catch(e){}
+  tbtn.addEventListener("click", function(){
+    var dark = getComputedStyle(root).getPropertyValue("--ground").trim().toLowerCase().indexOf("#0") === 0;
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("aero-theme", next); } catch(e){}
+  });
+
+  /* ---------- bar chart helper ---------- */
+  function bars(host, rows, max, fmt, delay){
+    host.innerHTML = "";
+    rows.forEach(function(r, i){
+      var row = document.createElement("div"); row.className = "barrow";
+      var nm = document.createElement("div"); nm.className = "nm"; nm.textContent = r.name;
+      var tr = document.createElement("div"); tr.className = "track";
+      var fl = document.createElement("div");
+      fl.className = "fill c-" + r.kind;
+      var pct = max > 0 ? Math.max(r.value / max * 100, r.value > 0 ? 1.2 : 0) : 0;
+      fl.style.setProperty("--w", pct.toFixed(2) + "%");
+      tr.appendChild(fl);
+      var vl = document.createElement("div"); vl.className = "vl num t-" + r.kind; vl.textContent = fmt(r.value);
+      row.appendChild(nm); row.appendChild(tr); row.appendChild(vl);
+      host.appendChild(row);
+    });
+  }
+
+  /* ---------- hero: median delivery rate (TOMM 1.1) ---------- */
+  bars(document.getElementById("heroChart"), [
+    { name: "AERO",  value: 1.18, kind: "aero"  },
+    { name: "Cubic", value: 0.61, kind: "cubic" },
+    { name: "Reno",  value: 0.46, kind: "reno"  },
+    { name: "BBR2",  value: 0.32, kind: "bbr"   }
+  ], 1.18, function(v){ return v.toFixed(2) + " Mbps"; }, 120);
+
+  /* ---------- results explorer (NOSSDAV Table 3) ---------- */
+  var NAMES = ["AERO + Pensieve+","AERO + Merina+","AERO + BBA2-C","BBR2 + Pensieve+","BBR2 + Merina+",
+               "BBR2 + BBA2-C","Cubic + BBA2-C","Reno + BBA2-C","BBR2 + AVG-TH"];
+  var KINDS = ["aero","aero","aero","bbr","bbr","bbr","cubic","reno","bbr"];
+  var DATA = {
+    vmaf:    { amazon:[70.00,70.35,23.44,33.06,29.80,23.45,23.31,23.53,23.48],
+               netflix:[79.10,77.08,26.28,42.23,46.00,25.49,26.02,25.42,25.97],
+               belgium:[76.94,78.80,25.19,57.93,53.75,25.51,25.20,25.31,26.33],
+               fmt:function(v){return v.toFixed(2);}, note:"Higher is better · 0–100" },
+    bitrate: { amazon:[3.94,2.90,0.54,0.74,0.55,0.52,0.52,0.50,0.63],
+               netflix:[6.65,4.40,1.62,1.24,1.10,1.09,1.09,1.02,1.23],
+               belgium:[5.68,3.24,1.38,2.76,1.00,1.43,1.39,1.41,2.56],
+               fmt:function(v){return v.toFixed(2)+" Mbps";}, note:"Higher is better" },
+    seg4k:   { amazon:[4.33,14.67,0.00,0.00,1.00,0.00,0.00,0.00,0.00],
+               netflix:[5.00,19.33,0.00,0.00,6.67,0.00,0.00,0.00,0.00],
+               belgium:[4.00,21.00,0.00,0.00,7.00,0.00,0.00,0.00,0.00],
+               fmt:function(v){return v.toFixed(2);}, note:"Segments fetched at 2160p · higher is better" },
+    rd:      { amazon:[0.01,3.33,0.00,0.00,13.42,0.00,0.00,0.00,0.00],
+               netflix:[0.20,0.09,0.00,0.00,2.21,0.00,0.00,0.00,0.00],
+               belgium:[0.08,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00],
+               fmt:function(v){return v.toFixed(2)+"%";}, note:"Lower is better · many combinations reach 0" },
+    psnr:    { amazon:[38.91,39.94,32.00,33.06,32.77,31.79,31.93,31.92,31.91],
+               netflix:[40.64,41.43,32.37,34.21,35.63,32.09,32.27,32.13,32.43],
+               belgium:[39.89,41.40,32.28,36.47,36.56,32.13,32.27,32.20,32.17],
+               fmt:function(v){return v.toFixed(2)+" dB";}, note:"Higher is better · dB" }
+  };
+  var metric = "vmaf", trace = "amazon";
+  var host = document.getElementById("resultChart"), note = document.getElementById("metricNote");
+
+  function draw(){
+    var d = DATA[metric], vals = d[trace];
+    var max = Math.max.apply(null, vals);
+    var rows = NAMES.map(function(n,i){ return { name:n, value:vals[i], kind:KINDS[i] }; });
+    bars(host, rows, max, d.fmt, 0);
+    note.textContent = d.note;
+  }
+  function wire(id, attr, set){
+    var group = document.getElementById(id);
+    group.addEventListener("click", function(ev){
+      var b = ev.target.closest("[" + attr + "]");
+      if (!b) return;
+      [].forEach.call(group.querySelectorAll(".tab"), function(t){ t.setAttribute("aria-selected","false"); });
+      b.setAttribute("aria-selected","true");
+      set(b.getAttribute(attr));
+      draw();
+    });
+  }
+  wire("metricTabs","data-metric", function(v){ metric = v; });
+  wire("traceTabs","data-trace",  function(v){ trace  = v; });
+  draw();
+
+  /* ---------- fairness (TOMM Fig. 6) ---------- */
+  bars(document.getElementById("fairChart"), [
+    { name:"Client 1", value:20.1, kind:"aero" },
+    { name:"Client 2", value:20.9, kind:"aero" },
+    { name:"Client 3", value:23.2, kind:"aero" },
+    { name:"Client 4", value:20.6, kind:"aero" },
+    { name:"Client 5", value:24.1, kind:"aero" }
+  ], 24.1, function(v){ return v.toFixed(1) + " Mbps"; }, 160);
+
+  /* ---------- alpha explorer ---------- */
+  var A = 1.87;
+  var rng = document.getElementById("alphaRange"),
+      aOut = document.getElementById("alphaVal"),
+      mOut = document.getElementById("multOut"),
+      cOut = document.getElementById("cwndOut");
+  function upd(){
+    var a = parseFloat(rng.value), m = Math.pow(A, a);
+    aOut.textContent = (a >= 0 ? "+" : "−") + Math.abs(a).toFixed(2);
+    mOut.textContent = m.toFixed(2) + "×";
+    cOut.textContent = Math.round(m * 1000).toLocaleString("en-US");
+  }
+  rng.addEventListener("input", upd);
+  upd();
+
+  /* ---------- copy buttons ---------- */
+  [].forEach.call(document.querySelectorAll(".copy"), function(btn){
+    btn.addEventListener("click", function(){
+      var txt = document.getElementById(btn.getAttribute("data-copy")).textContent;
+      var done = function(){ var o = btn.textContent; btn.textContent = "Copied"; setTimeout(function(){ btn.textContent = o; }, 1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt).then(done, done); }
+      else {
+        var ta = document.createElement("textarea"); ta.value = txt; document.body.appendChild(ta);
+        ta.select(); try { document.execCommand("copy"); } catch(e){} document.body.removeChild(ta); done();
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>

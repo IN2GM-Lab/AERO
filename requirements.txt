@@ -1,0 +1,11 @@
+# AERO — training and offline evaluation
+# Tested on Python 3.10.12
+torch==2.1.1
+numpy==1.26.1
+tqdm==4.66.1
+matplotlib
+
+# Deployment only (Step 6 — aioquic integration).
+# Not needed for Steps 1-5. Install from your aioquic checkout instead if you
+# are integrating AERO into a modified fork.
+# aioquic
